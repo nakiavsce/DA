@@ -4,6 +4,36 @@ Tanggal validasi: 2026-09-19 (sesi lanjutan). Metode: setiap temuan dibuka berka
 (grep + baca kode), bukan mempercayai dokumen audit. Angka audit dibuat pada repo `pandeyoga/DAHOST@df6fb5c`; repo ini
 adalah turunannya, jadi sebagian angka berbeda sedikit tetapi **polanya sama**.
 
+## 0. KONTEKS WAJIB UNTUK AGENT BERIKUTNYA (baca dulu, 2 menit)
+
+**Aplikasi:** ERP CV. Dewi Aditya (garmen): FastAPI (`/app/backend`, entry `server.py`, 293 router) + React CRA/craco
+(`/app/frontend`) + MongoDB. Bahasa UI, dokumen, dan komunikasi ke user: **Indonesia**. Dokumen induk: `/app/memory/PRD.md`
+(log per sesi, terbaru di atas), `/app/HANDOFF.md`, `/app/ARCHITECTURE.md` (SSOT koleksi), `/app/AGENT_DEVELOPMENT_RULES.md`.
+
+**Lingkungan (jebakan yang sudah ditemui):**
+- `backend/.env` wajib punya `JWT_SECRET` (auth.py menolak boot bila kosong). `MONGO_URL`, `DB_NAME=test_database`, `CORS_ORIGINS`.
+- `pip install -r requirements.txt` gagal pada pin `emergentintegrations==0.2.0` vs `litellm 1.80.0` → keduanya sudah ada di image;
+  install sisanya dengan `grep -v "^emergentintegrations\|^litellm\|^ast_serialize" requirements.txt > /tmp/req.txt && pip install -r /tmp/req.txt`.
+- **Frontend dilayani sebagai STATIC BUNDLE** (`yarn start` = `node static_server.js` → `frontend/build`). Perubahan `frontend/src`
+  TIDAK hot-reload: jalankan `bash /app/scripts/rebuild_frontend.sh` (atau `cd /app/frontend && yarn build`, ±3 menit, jalankan di background).
+- Backend hot-reload aktif tetapi startup ±15 detik (router banyak). Log: `tail -n 100 /var/log/supervisor/backend.err.log`.
+- **Data uji = data klien nyata** dari `seed/DA_SEED_GOLIVE.archive.gz` (104 model · 645 varian · 1.756 material · 634 BOM · 38 user).
+  Restore: `mongorestore --gzip --archive=/app/seed/DA_SEED_GOLIVE.archive.gz --nsFrom='dahost_erp.*' --nsTo='test_database.*' --drop`
+  (atau `bash /app/scripts/seed_golive_restore.sh --force`). **Jangan pakai seeder demo** (`ALLOW_DEMO_SEED`). Setelah uji yang
+  mengubah data (apply, delete, posting) → restore lagi.
+- Kredensial: `/app/memory/test_credentials.md` (admin `admin@garment.com` / `Admin@123`; peran lain `{role}@dewiaditya.id` / `Dewi@123`).
+  Login rate-limit 10 percobaan/60 dtk per akun → login sekali, simpan token.
+- Pytest: `backend/pytest.ini` memaksa `-n 2 --dist loadscope`; serial = `-n 0` (BUKAN `-p no:xdist`). Kebanyakan test butuh
+  `REACT_APP_BACKEND_URL` di env (`export REACT_APP_BACKEND_URL=$(grep REACT_APP_BACKEND_URL /app/frontend/.env | cut -d= -f2)`)
+  dan `set -a && . backend/.env && set +a`. Test `test_iter218_gap_fokus.py` sebagian butuh `/app/private/` (tidak ada di repo) → wajar error.
+- Gate resmi: `bash /app/scripts/gate.sh`; invarian data: `python /app/scripts/verify_data_integrity.py`.
+- Konvensi kode: rute wajib prefix `/api`; helper `get_db()` dari `database.py`; auth via `Depends(require_auth)` atau
+  `await require_auth(request)`; gerbang keuangan yang sudah ada: `routes/rahaza_coa._require_fin`, `routes/shared.assert_can_act`;
+  jurnal via `routes/rahaza_posting._create_posted_je` / `_find_existing_je` / `_void_je_by_source`; ID dokumen = `uuid4` string di field `id`.
+
+**Status pekerjaan sebelum plan ini:** semua fitur importir Excel BOM (FOKUS/SISA/BOM_OTOMATIS) selesai & teruji (PRD sesi 2026-09-19 a–b).
+Plan di bawah adalah pekerjaan BERIKUTNYA; belum ada satu pun langkahnya yang dikerjakan.
+
 ## A. HASIL VALIDASI
 
 | ID | Putusan | Bukti di repo ini |
@@ -62,47 +92,55 @@ pemeriksaan otomatis agar tidak kambuh (gate). Setiap fase = 1 sesi kerja + test
 | 1.4 | **T-07** | Sebelum hapus job: cek periode terkunci → 409; `_void_je_by_source(db,"production_job",f"wip_fg_job:{jid}")`; `fg_cost_layers.delete_many({gl_job_id})`; `rahaza_hpp_snapshots.delete_many({job_id})`; `rahaza_wip_events.delete_many({job_id})`. Terapkan juga di `vendor_shipment.py:563`. Ekstrak ke `core/production_job_delete.py` agar 2 jalur pakai 1 fungsi. | `routes/production_execution.py:717`, `routes/vendor_shipment.py:563` | Job selesai (ada JE `wip_fg_job:*`) dihapus → JE `voided`, cermin hilang, layer & snapshot 0; job di periode terkunci → 409. |
 | 1.5 | **T-08** | Satu konstanta `core/roles.py: FINANCE_ROLES = ("superadmin","admin","owner","accounting","staff_keuangan","manager_keuangan","finance","accountant")`, `APPROVER_ROLES = FINANCE_ROLES + ("hr","hr_manager","manager")`. Ganti ±13 gerbang di 8 berkas. | `employee_expense_claims`, `employee_travel_requests`, `employee_travel_settlements`, `employee_expense_gl_mapping`, `employee_expense_category_master`, `employee_expense_summary`, `rahaza_ar_360`, `rahaza_channel_gl_mapping` | Login `accounting@…` → approve klaim biaya 200 (bukan 403). Tambah uji RBAC ke `backend_test_f6_rbac.py`. |
 | 1.6 | **T-14 (a,b)** | (a) `mature_ap_from_cmt_receipt`: baris `rate==0 & qty_actual>0` → `variance_flagged=True`, `variance_reasons+=["tarif CMT 0 untuk N pcs"]`, tampil di dokumen tagihan. (b) Teks gap `cmt_rate_missing` → "Isi Biaya Jahit per SKU di layar **Biaya Jahit SPK**" dengan `target` layar tsb. | `routes/production_maklon_bridge.py:326-430`, `core/product_costing.py:435` | Penerimaan CMT tanpa tarif → tagihan draft berbendera variance + alasan; gap HPP menunjuk layar yang bisa diisi. |
-| 1.7 | **T-09 (1)** | Invarian **INV-JL-2**: setiap JE `posted` punya cermin dengan Σdebit = Σkredit = kepala; laporkan JE tanpa cermin. Tambah ke `verify_data_integrity.py` + `gate.sh`. | `scripts/verify_data_integrity.py` | Jalankan pada seed go-live → 0 pelanggaran (atau daftar untuk diperbaiki). |
-| 1.8 | **T-10** | Indeks unique parsial `(source_module, source_ref)` dengan `partialFilterExpression: {status: {$ne: "voided"}}`; migrasi: deteksi duplikat aktif dulu (laporkan, jangan hapus otomatis). `_create_posted_je` tangkap `DuplicateKeyError` → kembalikan JE existing. Kasbon: naikkan `gl.ok=false` ke respons (`ok:false`, 500/409) agar layar tidak "berhasil". | `server.py:577`, `routes/rahaza_posting.py`, `routes/dewi_kasbon.py:44,368,432` | Dua POST paralel sumber sama → 1 JE. Kasbon dengan profil posting hilang → respons error terlihat. |
+| 1.7 | **T-09 (1)** | Invarian **INV-JL-2**: setiap JE `posted` punya cermin dengan Σdebit = Σkredit = kepala; laporkan JE tanpa cermin. Tambah ke `verify_data_integrity.py` (pola INV-JL-1 di baris 134-141) + `gate.sh`. | `scripts/verify_data_integrity.py` | Jalankan pada seed go-live → 0 pelanggaran (atau daftar untuk diperbaiki). |
+| 1.8 | **T-10** | Indeks unique parsial `(source_module, source_ref)` dengan `partialFilterExpression: {status: {$ne: "voided"}}`; migrasi: deteksi duplikat aktif dulu (laporkan, jangan hapus otomatis). `_create_posted_je` (`rahaza_posting.py:132`, insert kepala baris 222, cermin baris 249) tangkap `DuplicateKeyError` → kembalikan JE existing via `_find_existing_je` (baris 125). Kasbon: `_post_kasbon_gl` (`dewi_kasbon.py:44`) dipanggil di baris 362, 426, 609 — naikkan `gl_result.ok=false` ke respons (`ok:false` + pesan) agar layar tidak "berhasil". | `server.py:577`, `routes/rahaza_posting.py:125-249`, `routes/dewi_kasbon.py:44,362,426,609` | Dua POST paralel sumber sama → 1 JE. Kasbon dengan profil posting hilang → respons error terlihat. |
+
+**Catatan Fase 1 lain:** 1.3 pola penjaga mirror yang bisa disalin: `dewi_maklon_billing.py:319` (`if po.get('mirror_of') == 'production_pos'`).
+1.6(a) fungsi target `mature_ap_from_cmt_receipt` di `production_maklon_bridge.py:294` (loop baris 338-342 menghitung `rate`, `variance_flag` baris 396,
+disimpan baris 430 & 471). 1.4 fungsi `_void_je_by_source(db, source_module, source_ref, user, reason)` di `rahaza_posting.py:254`; `source_ref`
+job = `f"wip_fg_job:{job_id}"` (baris 1984); contoh pembersihan layer/snapshot di `routes/maklon_seed.py:427-428`.
 
 ### FASE 2 — Otorisasi (T-01) — target 1–2 sesi, bertahap
+Titik kunci: `backend/auth.py:86 require_auth` (memuat `_permissions`, tidak menegakkan); peran di-seed di `auth.py:238 _seed_default_roles`;
+`middleware/marketing_scope_guard.py:79-81` melewatkan peran non-toko; gerbang yang sudah ada dan bisa ditiru: `routes/shared.assert_can_act`,
+`routes/rahaza_coa._require_fin`, `production_execution.py:720-721` (`deny_klien` + cek superadmin).
 | # | Langkah | Detail |
 |---|---|---|
-| 2.1 | Inventaris otomatis | Skrip `scripts/audit_authz.py` (AST): daftar endpoint tulis tanpa gerbang peran → CSV per router. Jadi baseline & gate ("angka tidak boleh naik"). |
-| 2.2 | Dependensi router-level | `core/authz.py: require_roles(*roles)` + `router = APIRouter(dependencies=[Depends(require_roles(...))])` default **tolak** untuk peran eksternal (`vendor`, `cmt_vendor`, `buyer`, `klien_maklon`, `pic_toko`, `marketing_kol`, `cs_staff`) pada semua router internal. Ini menutup 100% lintas-portal dalam 1 perubahan tanpa menyentuh tiap endpoint. |
-| 2.3 | 79 DELETE | Tambah gerbang eksplisit per endpoint (admin/owner/spv domain). |
-| 2.4 | SDM & Biaya/HPP | `submit_review` hanya self atau atasan/HR; `delete_hpp` RnD/finance; `portal-accounts` admin. |
-| 2.5 | Sisanya per domain | Marketing (sudah punya scope guard, tambah gerbang peran), Gudang, R&D, Workspace, LMS. |
-| Verifikasi | Matriks RBAC testing agent: tiap peran × endpoint contoh (200/403). `audit_authz.py` di gate: jumlah tanpa gerbang menurun monoton. |
+| 2.1 | Inventaris otomatis | Skrip baru `scripts/audit_authz.py` (AST atas `backend/routes/**`): daftar endpoint tulis tanpa gerbang peran → CSV per router (`router, method, path, fungsi, baris`). Baseline sesi ini (pola kasar): 580/999 tulis, 79 DELETE. Pasang di `gate.sh` sebagai "angka tidak boleh naik". |
+| 2.2 | Dependensi router-level | Buat `core/authz.py`: `require_roles(*roles)`, `deny_roles(*roles)`. Di `server.py` (semua `include_router`, baris ±1700-2400) tambahkan `dependencies=[Depends(deny_roles("vendor","cmt_vendor","buyer","klien_maklon","pic_toko","marketing_kol","cs_staff"))]` pada router internal (semua kecuali router portal eksternal: `vendor_portal`, `dewi_client_*`, `creator_*`, `live_host_*`, `marketing_*` yang memang untuk `pic_toko`). Ini menutup lintas-portal dalam 1 perubahan. |
+| 2.3 | 79 DELETE | Dari CSV 2.1: tambah gerbang eksplisit per endpoint (admin/owner/spv domain). Mulai berkas terbanyak: `production_execution.py`, `production_pos.py`, `master_data.py`, `warehouse.py`, `operations.py`. |
+| 2.4 | SDM & Biaya/HPP | `dewi_hris_performance.py:456 submit_review` → `actor=="manager"` hanya bila `user` = reviewer/atasan (`review.reviewer_id`) atau peran `hr`/`hr_manager`; `dewi_rnd_hpp.py:779 delete_hpp` → `rnd_staff`/finance/admin; `dewi_client_admin.py:139 DELETE portal-accounts` → admin/owner/`admin_maklon`. |
+| 2.5 | Sisanya per domain | Marketing 168 (sudah ada scope guard; tambah gerbang peran), Gudang 92, SDM 45, R&D 37, Workspace 21, LMS 16, Keuangan 14. |
+| Verifikasi | Matriks RBAC testing agent: tiap peran × endpoint contoh (200/403); pakai akun `{role}@dewiaditya.id`. `audit_authz.py` di gate: jumlah tanpa gerbang menurun monoton. Regresi `backend_test_f6_rbac.py`, `backend_test_procurement_rbac.py`. |
 
 ### FASE 3 — SSOT koleksi hantu (T-03, T-17, T-18, T-19) — target 1 sesi
 | # | Langkah |
 |---|---|
-| 3.1 | Gate baru `scripts/check_collection_writers.py`: koleksi yang dibaca kode wajib punya ≥1 penulis (kecuali daftar putih: dibaca hanya untuk migrasi). Pasang di `gate.sh`. |
-| 3.2 | **T-03**: pindahkan 23 pembaca `rahaza_work_orders` → `production_jobs` dengan peta field (`quantity→qty`, `qty_completed→completed_qty`, `order_code→job_number`, status). Buat `core/wo_reader.py` (satu adaptor) supaya 23 berkas hanya ganti impor. Dampak: dasbor produksi, laporan eksekutif, kapasitas, notifikasi, next-actions, HPP per WO, scan barcode, AI. |
-| 3.3 | **T-17 HRIS**: Portal Saya → Kinerja baca `dewi_perf_*` (bukan `hris_*`); **hapus baris `dewi_perf_*` dari `td011_cleanup_orphan_collections.py`** (mencegah penghapusan data nyata). |
-| 3.4 | **T-17 lain**: `rahaza_attendance` → `rahaza_attendance_events` (AI HR); `rahaza_qc_events` → sumber QC nyata (`cmt_receipts`/`production_progress`) atau hapus metrik; `capacity_config` → endpoint GET/PUT + layar kecil, atau hapus pembacanya; koleksi ditulis-tak-dibaca (`fg_cost_consumptions`, `invoice_change_history`, `dewi_maklon_inventory`, `workspace_shares`, `wh_rca_audit`, dst): putuskan tampilkan (read endpoint + tab "Riwayat") atau berhenti menulis. |
-| 3.5 | **T-18** hapus `services/stock_service.py`; **T-19** hapus `core/collection_registry.py` atau jadikan ia yang dipakai `admin_backup.py` (pilih satu). |
+| 3.1 | Gate baru `scripts/check_collection_writers.py`: koleksi yang dibaca kode (`db.<nama>.find/count/aggregate`) wajib punya ≥1 penulis (`insert/update/replace/bulk`) di `routes/ core/ services/ utils/` (kecuali daftar putih untuk koleksi yang ditulis mesin impor deklaratif / migrasi). Pasang di `gate.sh`. |
+| 3.2 | **T-03**: 22 pembaca `rahaza_work_orders` (+`core/collection_registry.py`): `routes/dashboard_routes.py:78,79,340,341,355,356,530`, `wms_capacity_planning.py:52,69`, `rahaza_next_actions.py:103,143,172,211,457`, `rahaza_hpp.py:91,510,519`, `dewi_production_reports`, `dewi_maklon_pos`, `production_control_tower`, `rahaza_shipments`, `rahaza_posting`, `rahaza_notifications`, `dewi_management_tools`, `rahaza_admin_shared`, `universal_scan`, `dewi_executive_report`, `production_maklon_bridge`, `rahaza_sprint22`, `dewi_maklon`, `production_stage_tracking`, `rahaza_shift_handover`, `analytics_ai`, `services/ai_aggregates/production_aggregates.py`, `services/ai_aggregates/rahaza_aggregates.py`. Buat adaptor `core/wo_reader.py` di atas `production_jobs` (peta: `quantity→qty`, `qty_completed→completed_qty`, `order_code→job_number`, `product_name→model_name`, `target_date→target_date||due_date`; status `in_progress/planned/released`) lalu 22 berkas cukup ganti pemanggilan. Cek dulu skema `production_jobs` nyata di seed (`mongosh test_database --eval 'db.production_jobs.findOne()'`). |
+| 3.3 | **T-17 HRIS**: `routes/dewi_portal_saya_ext.py:167,173,179,185` baca `hris_*` → ganti ke `dewi_perf_assignments/dewi_perf_reviews/dewi_perf_cycles/dewi_perf_kpis` (penulis: `routes/dewi_hris_performance.py`). **Hapus baris 32-35 di `migrations/td011_cleanup_orphan_collections.py`** (mendaftar `dewi_perf_*` sebagai yatim — akan menghapus data nyata bila dijalankan). |
+| 3.4 | **T-17 lain**: `services/ai_aggregates/hr_aggregates.py:9` & `routes/dewi_hr_ai.py:343,354` (`rahaza_attendance`) → `rahaza_attendance_events` (penulis `rahaza_auto_attendance_zkteco.py`, `rahaza_attendance_sessions.py`); `rahaza_qc_events` di `dewi_executive_report.py:147`, `analytics_ai.py:294`, `services/ai_aggregates/rahaza_aggregates.py:32,84` → sumber QC nyata (`cmt_receipts` reject / `production_progress`) atau hapus metriknya; `capacity_config` di `wms_capacity_planning.py:42` → endpoint GET/PUT + form kecil, atau ganti konstanta; koleksi ditulis-tak-dibaca (`fg_cost_consumptions` — `core/fg_cost_layers.py:238`, `invoice_change_history`, `dewi_maklon_inventory`, `workspace_shares`, `wh_rca_audit`, `wh_placement_movements`): putuskan tampilkan (endpoint GET + tab "Riwayat") atau berhenti menulis. |
+| 3.5 | **T-18** hapus `backend/services/stock_service.py` (0 importir; yang benar `core/stock_service.py`). **T-19** hapus `backend/core/collection_registry.py` (0 importir) atau jadikan sumber `admin_backup.py:1280,1321` menggantikan `data/collection_registry.py` — pilih satu. |
 
-### FASE 4 — Ketahanan & kinerja (T-12, T-09 (2,3), T-11, T-21, T-24) — target 1 sesi
+### FASE 4 — Ketahanan & kinerja (T-12, T-09 (2,3), T-11, T-21, T-22, T-23, T-24) — target 1 sesi
 | # | Langkah |
 |---|---|
-| 4.1 | **T-12** indeks: `vendor_shipment_items(shipment_id)`, `(po_item_id)`; `buyer_shipments(po_id)`; `vendor_shipments(po_id)`; `cmt_receipts(status)`, `(po_id)`; `wh_positions(rack_id)`, `(status)`, `(barcode)`; `wh_pending_movements(type,status)`, `(source_type,source_id)`; plus `active` pada `rahaza_boms`, `rahaza_employees`, `rahaza_locations`, `rahaza_leave_types`. |
-| 4.2 | **T-24** pindahkan 416 `create_index` dari boot ke `migrations/ensure_indexes.py` (dipanggil sekali saat deploy + opsional saat boot via env `ENSURE_INDEXES=1`). |
-| 4.3 | **T-09 (2)** balik urutan tulis JE: cermin dulu, kepala terakhir (kegagalan tengah → baris yatim yang sudah dideteksi INV-JL-1). **(3)** Opsional: Mongo replica set 1 node di compose (`--replSet rs0`) → transaksi untuk `_create_posted_je`. |
-| 4.4 | **T-11** samakan sumber: `_gl_balance_until` pakai cermin (`rahaza_journal_lines`) — konsisten dengan neraca saldo; tambah uji "saldo rekonsiliasi == saldo kas&bank == neraca saldo" untuk 1 akun. |
-| 4.5 | **T-21** `to_list(None)` di jalur terpanas (laporan keuangan, rekap marketing, ekspor): paginasi/`limit` + agregasi di DB; pakai `core/pagination.py`. |
-| 4.6 | **T-23** tanpa default `'*'`: bila `ENV=production` dan `CORS_ORIGINS` kosong → gagal boot dengan pesan jelas. **T-02 (kode)** `seed_initial_data`: di production baca `BOOTSTRAP_ADMIN_EMAIL/PASSWORD`, tolak boot bila kosong & belum ada superadmin; hapus baris kredensial dari `README_DEPLOY.md`. |
-| 4.7 | **T-22** token unduhan sekali-pakai 5 menit (`POST /api/auth/download-token?resource=`) untuk label/PDF/ekspor/WebSocket; sementara: Caddy `log { format filter { request>uri query delete } }`. |
+| 4.1 | **T-12** indeks (di `server.py` blok `create_index` ±baris 400-800, atau langsung di 4.2): `vendor_shipment_items(shipment_id)`, `(po_item_id)`; `buyer_shipments(po_id)`; `vendor_shipments(po_id)`; `cmt_receipts(status)`, `(po_id)`; `wh_positions(rack_id)`, `(status)`, `(barcode)`; `wh_pending_movements(type,status)`, `(source_type,source_id)`; plus `active` pada `rahaza_boms`, `rahaza_employees`, `rahaza_locations`, `rahaza_leave_types`. |
+| 4.2 | **T-24** pindahkan 416 `create_index` dari `server.py` (startup) ke `migrations/ensure_indexes.py` (idempoten; dipanggil `deploy/update.sh` + opsional saat boot via env `ENSURE_INDEXES=1`). |
+| 4.3 | **T-09 (2)** `rahaza_posting.py:222-249`: tulis cermin (`journal_lines.insert_many`) DULU, kepala (`journal_entries.insert_one`) TERAKHIR → kegagalan tengah = baris yatim yang sudah dideteksi INV-JL-1. **(3)** Opsional: Mongo replica set 1 node di `deploy/docker-compose.yml` (`--replSet rs0` + `rs.initiate()` sekali) → bungkus `_create_posted_je` dalam transaksi. |
+| 4.4 | **T-11** `routes/dewi_bank_reconciliation.py:129 _gl_balance_until` → pakai cermin `rahaza_journal_lines` (konsisten dengan `rahaza_posting.py:531 gl_balances_by_code` & `core/fin_statements.py:74 _sum_by_account`); tambah uji "saldo rekonsiliasi == saldo kas&bank == neraca saldo" untuk 1 akun bank. Pastikan setiap jalur void/edit JE menghapus cermin (audit `grep -rn "status.*voided" routes/`). |
+| 4.5 | **T-21** `to_list(None)` terbanyak: `production_execution.py` (38), `production_pos.py` (35), `buyer_shipment.py` (24), `vendor_shipment.py` (23), `exceptions.py` (10) — paginasi/`limit` + agregasi di DB; pakai `core/pagination.py`. Prioritaskan yang dipanggil layar daftar/laporan. |
+| 4.6 | **T-23** `server.py:2433-2439`: hilangkan default `'*'`; bila `ENV=production` & `CORS_ORIGINS` kosong → `raise RuntimeError` saat boot. **T-02 (kode)** `auth.py:176 seed_initial_data`: di production baca `BOOTSTRAP_ADMIN_EMAIL/PASSWORD` dari env, tolak boot bila kosong & belum ada superadmin; hapus baris 10 `deploy/README_DEPLOY.md`. |
+| 4.7 | **T-22** 9 berkas dengan `verify_token_str` (`auth.py:77`): `wms_fabric_rolls`, `wms_fg_labels` (`_auth_or_token` baris 39), `wms_audit`, `wms_material_labels`, `wms_labels`, `wms_delivery_notes`, `file_storage`, `websocket`, `communication/websocket`. Buat `POST /api/auth/download-token` (JWT 5 menit, claim `aud="download"`, `resource=`) + `verify_download_token`; ganti `_auth_or_token` untuk memakai itu. Sementara: `deploy/Caddyfile:36` tambahkan `format filter { request>uri query delete }`. |
 
-### FASE 5 — Disiplin rekayasa (T-13, T-15, T-16, T-20, T-28) — target 1 sesi
+### FASE 5 — Disiplin rekayasa (T-13, T-15, T-16, T-20, T-14c, T-28, T-26) — target 1 sesi
 | # | Langkah |
 |---|---|
-| 5.1 | **T-13/T-16** `.github/workflows/ci.yml`: `ruff check backend`, `eslint frontend/src`, `pytest tests/unit` (hermetik), `yarn install --frozen-lockfile && yarn build`; `Dockerfile.frontend` → `--frozen-lockfile`. Commit per perubahan bermakna. |
-| 5.2 | **T-15** folder `backend/tests/unit/` dengan `mongomock_motor` untuk `core/*` (mulai: `product_costing`, `bom_fill`, `uom`, `production_qty_ledger`, `catalog_stock`, `marketing_returns` — 6 alur yang sudah dibuktikan audit). Jest: kembalikan ≥1 suite (smoke render) atau hapus klaim 204 uji dari README. |
-| 5.3 | **T-20** `core/bulk_approve.py: bulk_approve(db, user, ids, collection, number_field, module, allowed_roles)`; 3 pemanggil jadi 3 baris. |
-| 5.4 | **T-14 (c)** kolom `tarif_jahit_per_pcs` di sheet `11_VENDOR_CMT` (`TEMPLATE_MASTER_DA.xlsx` + `CONTOH_TERISI`) → `dewi_cmt_partners.rate_per_pcs`; tampilkan sebagai pembanding di layar Biaya Jahit SPK. |
-| 5.5 | **T-28** pindahkan `test_*.py`/`backend_test*.py` akar → `tests/legacy/`; hapus `dewi_kpi.py.old`, `.pre-refactor-backup`; arsipkan blok status README ke `docs/CHANGELOG_SESI.md`; `test_result.md` → `docs/archive/`. **T-26** hapus `mobile/` atau beri README "belum dimulai". |
+| 5.1 | **T-13/T-16** buat `.github/workflows/ci.yml`: `ruff check backend`, `cd frontend && yarn install --frozen-lockfile && yarn lint && yarn build`, `pytest backend/tests/unit -n 0` (hermetik). `deploy/Dockerfile.frontend:12` → `yarn install --frozen-lockfile --network-timeout 600000`. Mulai commit per perubahan bermakna (repo kini 1 commit). |
+| 5.2 | **T-15** folder baru `backend/tests/unit/` (tanpa server; `mongomock-motor` atau fixture DB terisolasi) untuk `core/*`: mulai `product_costing` (T-04), `bom_fill`, `uom`, `production_qty_ledger`, `catalog_stock`, `marketing_returns` — 6 alur yang audit sudah buktikan bisa diuji hermetik. Jest: kembalikan ≥1 suite smoke (infrastruktur `frontend/src/setupTests.js` + `craco.config.js` masih ada) ATAU hapus klaim "204 uji Jest" dari `README.md:122`. |
+| 5.3 | **T-20** `core/bulk_approve.py: bulk_approve(db, user, ids, *, collection, number_field, module, allowed_roles, allowed_from_status=("submitted",))`; ganti isi `employee_expense_claims.py:566`, `employee_travel_requests.py:680`, `employee_travel_settlements.py:841`. |
+| 5.4 | **T-14 (c)** kolom `tarif_jahit_per_pcs` di sheet `11_VENDOR_CMT` (`data_import/TEMPLATE_MASTER_DA.xlsx` & `CONTOH_TERISI_MASTER_DA.xlsx`; importir: cari `11_VENDOR_CMT` di `backend/routes/data_transfer.py`/`core/*import*`) → `dewi_cmt_partners.rate_per_pcs` (pembaca sudah ada: `production_sewing_cost.py:114` kandidat tarif, `dewi_cmt_lifecycle.py:219`). Tampilkan sebagai pembanding di layar Biaya Jahit SPK. |
+| 5.5 | **T-28** pindahkan 60 `test_*.py`/`backend_test*.py` akar → `tests/legacy/`; hapus `backend/routes/dewi_kpi.py.old` & `dewi_kpi.py.pre-refactor-backup`; blok status `README.md` → `docs/CHANGELOG_SESI.md`; `test_result.md` (484 KB) → `docs/archive/`. **T-26** hapus `mobile/` (36 berkas, 0 panggilan API) atau beri `mobile/README.md` "kerangka Expo, belum dimulai". |
 
 ### Backlog rawat (tanpa jadwal): T-25 (307 endpoint tanpa pemanggil — matikan bertahap dengan 410), T-27 (`{items,total}` seragam + `asList()` di FE).
 
@@ -119,3 +157,25 @@ pemeriksaan otomatis agar tidak kambuh (gate). Setiap fase = 1 sesi kerja + test
 - Semua perubahan lolos `bash scripts/gate.sh` + suite `pytest` terkait + testing agent (backend & UI untuk yang menyentuh layar).
 - Gate baru (INV-JL-2, `check_collection_writers.py`, `audit_authz.py`) dipasang di `gate.sh` supaya kelas cacat tidak kambuh.
 - `memory/PRD.md` diperbarui; DB uji dikembalikan ke `seed/DA_SEED_GOLIVE.archive.gz` setelah uji yang mengubah data.
+
+## E. PROTOKOL PER LANGKAH (agar bisa diserahkan antar-sesi)
+1. Sebelum menyentuh kode: `mongodump --gzip --archive=/tmp/pre.archive.gz --db test_database` (atau cukup andalkan restore seed).
+2. Buka berkas:baris yang disebut di tabel; **konfirmasi kode masih sama** (nomor baris bisa bergeser bila ada perubahan lain — cari berdasarkan nama fungsi).
+3. Tulis uji dulu bila memungkinkan (unit di `backend/tests/unit/`, atau skrip API di `/app/tests/` seperti `tests/test_bom_otomatis_roundtrip.py`).
+4. Perubahan minimal sesuai kolom "Perubahan"; jangan refactor di luar lingkup.
+5. Jika menyentuh `frontend/src`: `bash /app/scripts/rebuild_frontend.sh` sebelum screenshot/testing agent.
+6. Testing agent dengan konteks lengkap (kredensial, endpoint, perintah restore DB, "frontend static bundle — jangan ubah src").
+7. Catat di `memory/PRD.md` (bagian atas, format "SESI <tanggal> — …") + tandai langkah selesai di berkas ini (kolom Status di bawah).
+8. Restore DB seed bila uji mengubah data.
+
+## F. STATUS LANGKAH (perbarui setiap sesi)
+| Langkah | Status | Sesi / bukti |
+|---|---|---|
+| 0.1–0.2 | belum (aksi owner di VPS) | — |
+| 1.1 – 1.8 | belum | — |
+| 2.1 – 2.5 | belum | — |
+| 3.1 – 3.5 | belum | — |
+| 4.1 – 4.7 | belum | — |
+| 5.1 – 5.5 | belum | — |
+
+**Perintah pembuka sesi berikutnya yang disarankan dari user:** "Jalankan FASE 1 dari `/app/memory/PLAN_PERBAIKAN_AUDIT.md`."

@@ -1,5 +1,8 @@
 # HANDOFF — DA12345 (Dewi Aditya ERP)
 
+> **🔴 PEKERJAAN BERIKUTNYA (2026-09-19): eksekusi plan perbaikan hasil audit — `memory/PLAN_PERBAIKAN_AUDIT.md`**
+> (bagian 0 = konteks lingkungan & jebakan, Fase 1 = 8 perbaikan P0 uang/data dengan berkas:baris). Log sesi terbaru: `memory/PRD.md` (paling atas).
+
 > **🔴 DATA (2026-09-17): seed resmi = `seed/DA_SEED_GOLIVE.archive.gz` (data klien nyata dari backup VPS + BOM aksesoris).**
 > Restore: `bash scripts/seed_golive_restore.sh --force`. Jangan pakai seeder demo. Detail: `AGENT_QUICKSTART.md`, `memory/PRD.md` (sesi 2026-09-17).
 
