@@ -1,5 +1,13 @@
 # PRD — CV. Dewi Aditya ERP
 
+## SESI 2026-09-19 (c) — VALIDASI `AUDIT_DAHOST.md` → plan perbaikan (tanpa perubahan kode)
+- 28 temuan audit dicek langsung di kode repo ini: 24 VALID (koreksi kecil: T-08 ±13 gerbang bukan 19 karena `pr_approval.py` sudah memuat
+  `accounting`; T-11 turun ke P2 karena void menghapus cermin; T-16 `frontend/yarn.lock` sudah ada), 2 tidak diuji ulang (T-25, T-27), 0 gugur.
+- Plan 5 fase + fase 0 (ganti sandi superadmin VPS) ditulis di **`/app/memory/PLAN_PERBAIKAN_AUDIT.md`**. Sesi berikutnya mulai FASE 1
+  (T-04 computable, T-05 cascade_delete, T-06 409 mirror, T-07 void JE saat hapus job, T-08 FINANCE_ROLES, T-14 variance tarif 0,
+  T-09 INV-JL-2, T-10 indeks unique parsial + kasbon error terlihat).
+
+
 ## SESI 2026-09-19 (b) — LANJUTAN dari GitHub `mzkkajsbd/DA`: sheet BOM_OTOMATIS di berkas FOKUS + `bom_rows_from_wb`
 - Kondisi awal: `core/master_fill.py` sudah memanggil `gap_sisa.bom_rows_from_wb(wb)` (edit terakhir sesi lalu) tetapi fungsinya BELUM ADA →
   `fill-preview`/`fill-apply` ImportError. Bring-up: rsync repo → `backend/.env` + `JWT_SECRET` → pip (lewati pin emergentintegrations/litellm)
